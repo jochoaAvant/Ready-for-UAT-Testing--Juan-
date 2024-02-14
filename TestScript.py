@@ -1,9 +1,46 @@
+"""
+This script compares two Excel files (one manual and one automated) and writes the results to a 
+    text file and an Excel file.
+
+The script performs the following steps:
+1. Reads in the manual and automated files.
+2. Removes 'Id' and 'VIA' columns from both files if they exist.
+3. Performs basic validation on the two files, checking if they have the same number of rows 
+    and columns, the same column names, and the same data types for each column.
+4. If the files pass basic validation, it renames and drops columns in both files based on a mapping file.
+5. Sorts the rows in both files based on specified columns.
+6. Compares the sorted files and writes any differences to the text file and the Excel file.
+
+The script can be configured to ignore differences in the number of rows and/or data types.
+
+Parameters:
+_vendor (str): The vendor name.
+_filename (str): The filename.
+_new_file (int): Whether to start a new results file or append to an existing one.
+_ignore_rows (int): Whether to ignore the number of rows in the comparison.
+_ignore_data_types (int): Whether to ignore the data types in the comparison.
+_error_codes (dict): The dictionary of error codes.
+
+Returns:
+None
+"""
+
+from pathlib import Path
 import pandas as pd
 import numpy as np
-from pathlib import Path
 
 
 def rename_and_drop_columns(input_df, column_mapping_df):
+    """
+    Renames and drops columns in a DataFrame based on a mapping DataFrame.
+
+    Parameters:
+    input_df (pd.DataFrame): The DataFrame to modify.
+    column_mapping_df (pd.DataFrame): The DataFrame containing the column mappings.
+
+    Returns:
+    pd.DataFrame: The modified DataFrame.
+    """
     # Create a dictionary from the column_mapping dataframe
     column_mapping_dict = column_mapping_df.set_index(
         'file_column')['rpm_column'].to_dict()
@@ -22,15 +59,42 @@ def rename_and_drop_columns(input_df, column_mapping_df):
 
 
 def basic_conditioning(df1, df2):
+    """
+    Removes 'Id' and 'VIA' columns from two DataFrames if they exist.
+
+    Parameters:
+    df1 (pd.DataFrame): The first DataFrame.
+    df2 (pd.DataFrame): The second DataFrame.
+
+    Returns:
+    tuple: The modified DataFrames.
+    """
     # Remove 'Id' column and 'VIA' Column if any exists
     if any(column_name == 'id' for column_name in df2.columns):
         df2.drop(['id'], axis=1, inplace=True)
+    if any(column_name == 'Id' for column_name in df2.columns):
+        df2.drop(['id'], axis=1, inplace=True)
     if any(column_name == 'VIA' for column_name in df1.columns):
         df1.drop(['VIA'], axis=1, inplace=True)
+    if any(column_name == 'Via' for column_name in df2.columns):
+        df2.drop(['Via'], axis=1, inplace=True)
     return df1, df2
 
 
-def basic_validation(df1, df2, result_file, _ignore_rows=0):
+def basic_validation(df1, df2, result_file, _ignore_rows=0, _ignore_data_types=0):
+    """
+    Performs basic validation on two DataFrames and writes the results to a file.
+
+    Parameters:
+    df1 (pd.DataFrame): The first DataFrame.
+    df2 (pd.DataFrame): The second DataFrame.
+    result_file (file object): The file to write the results to.
+    _ignore_rows (int, optional): Whether to ignore the number of rows in the comparison. Defaults to 0.
+    _ignore_data_types (int, optional): Whether to ignore the data types in the comparison. Defaults to 0.
+
+    Returns:
+    tuple: The error code and a DataFrame or list containing the differences.
+    """
     # Check if the dataframes have the same number of rows and columns
     if df1.shape == df2.shape:
         result_file.write(
@@ -56,10 +120,10 @@ def basic_validation(df1, df2, result_file, _ignore_rows=0):
                 error = 3
             else:
                 error = 2
-                return error
+                return error, pd.DataFrame()
         else:
             error = 1
-            return error
+            return error, pd.DataFrame()
 
     # Check if the dataframes have the same columns
     if set(df1.columns) == set(df2.columns):
@@ -72,15 +136,43 @@ def basic_validation(df1, df2, result_file, _ignore_rows=0):
                 result_file.write(
                     f"The column '{column}' has different data types in the dataframes.\n")
                 print(
-                    f"The column '{column}' has different data types in the dataframes.")
+                    f"The column '{column}' in manual has type {df1[column].dtype}, while in automated has type {df2[column].dtype} \n")
                 different_types = 1
                 new_row = pd.DataFrame([{'Column': column, 'Same DataType': 'No',
                                          'DataTypeManual': df1[column].dtype,
                                          'DataTypeAutomated': df2[column].dtype}])
                 comparison_df = pd.concat([comparison_df,
                                           new_row], ignore_index=True)
+
+                # If the column have different data types, ask user if they want to copy the data type from one file to the other
+                copy_type = input("Do you want to copy the data type from one file to the other? \n \
+                                   no: enter 0 \n \
+                                   manual to automated: enter 1 \n \
+                                   automated to manual: enter 2 \n")
+                match copy_type:
+                    case '0':
+                        print("No data type copied")
+                    case '1':
+                        df2[column] = df2[column].astype(df1[column].dtype)
+                        result_file.write(
+                            f"The data type of column '{column}' in the automated file has been changed to match the manual file.\n")
+                        print(
+                            f"The data type of column '{column}' in the automated file has been changed to match the manual file.")
+                        _ignore_data_types = 1
+                    case '2':
+                        df1[column] = df1[column].astype(df2[column].dtype)
+                        result_file.write(
+                            f"The data type of column '{column}' in the manual file has been changed to match the autoated file.\n")
+                        print(
+                            f"The data type of column '{column}' in the manual file has been changed to match the automated file.")
+                        _ignore_data_types = 1
         if different_types == 1:
-            error = 5
+            if _ignore_data_types == 1:
+                result_file.write(
+                    "Ignoring the data types in the comparison.\n")
+                error = 9
+            else:
+                error = 5
             return error, comparison_df
         else:
             error = 6
@@ -97,6 +189,16 @@ def basic_validation(df1, df2, result_file, _ignore_rows=0):
 
 
 def sort_rows(unsorted_df, columns_to_sort):
+    """
+    Sorts a DataFrame based on specified columns.
+
+    Parameters:
+    unsorted_df (pd.DataFrame): The DataFrame to sort.
+    columns_to_sort (tuple): The columns to sort by.
+
+    Returns:
+    tuple: The error code and the sorted DataFrame.
+    """
     # Check if all columns in columns_to_sort exist in the dataframe
     if all(item in unsorted_df.columns for item in columns_to_sort):
         # Sort the dataframe
@@ -104,10 +206,21 @@ def sort_rows(unsorted_df, columns_to_sort):
             list(columns_to_sort)).reset_index(drop=True)
         return (0, df_sorted)
     else:
-        return (8, df_sorted)
+        return (8, pd.DataFrame())
 
 
 def compare_df(df1, df2, result_file):
+    """
+    Compares two DataFrames and writes the differences to a file.
+
+    Parameters:
+    df1 (pd.DataFrame): The first DataFrame.
+    df2 (pd.DataFrame): The second DataFrame.
+    result_file (file object): The file to write the differences to.
+
+    Returns:
+    tuple: The error code and a DataFrame containing the differences.
+    """
     # Select only numeric columns
     df1_numeric = df1.select_dtypes(
         include=[np.number]).reset_index(drop=True)
@@ -117,8 +230,14 @@ def compare_df(df1, df2, result_file):
     # Create a boolean mask for values in df1_numeric and df2_numeric that are not close
     mask = ~np.isclose(df1_numeric.values, df2_numeric.values, atol=0.01)
 
-    # Apply the mask to df1_numeric and df2_numeric, and drop rows that contain only NaN
-    diff_numeric = df1_numeric.where(mask).compare(df2_numeric.where(mask))
+    # Apply the mask to df1_numeric and df2_numeric
+    if df1_numeric.shape == df2_numeric.shape:
+        diff_numeric = df1_numeric.where(mask).compare(df2_numeric.where(mask))
+    else:
+        result_file.write(
+            "The dataframes have different number of rows and columns and can't be compared.\n")
+        print("The dataframes have different number of rows and columns and can't be compared.\n")
+        return 2, pd.DataFrame()
 
     # Select only non-numeric columns
     df1_non_numeric = df1.select_dtypes(exclude=[np.number])
@@ -142,7 +261,18 @@ def compare_df(df1, df2, result_file):
         return 0, diff
 
 
-def main(_vendor, _filename, _new_file, _ignore_rows, _error_codes):
+def main(_vendor, _filename, _new_file, _ignore_rows, _ignore_data_types, _error_codes):
+    """
+    Main function to run the script.
+
+    Parameters:
+    _vendor (str): The vendor name.
+    _filename (str): The filename.
+    _new_file (int): Whether to start a new results file or append to an existing one.
+    _ignore_rows (int): Whether to ignore the number of rows in the comparison.
+    _ignore_data_types (int): Whether to ignore the data types in the comparison.
+    _error_codes (dict): The dictionary of error codes.
+    """
     # Set the vendor and filename
     # Set the filenames for the manual and automated files
     filenamea = _filename + 'a.xlsx'
@@ -179,11 +309,11 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _error_codes):
         print("ERROR: opening mapping file")
 
     try:
-        if (_new_file):
-            test_results = open(test_results_url, 'wt')
+        if _new_file:
+            test_results = open(test_results_url, 'wt', encoding='utf-8')
             test_results.write(f"Test results for '{_vendor}'\n")
         else:
-            test_results = open(test_results_url, 'at')
+            test_results = open(test_results_url, 'at', encoding='utf-8')
     except:
         print("ERROR: opening test results file")
 
@@ -195,7 +325,7 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _error_codes):
 
     # run basic validation on the dataframes
     error, output_df = basic_validation(
-        manual, automated, test_results, _ignore_rows=_ignore_rows)
+        manual, automated, test_results, _ignore_rows=_ignore_rows, _ignore_data_types=_ignore_data_types)
 
     match error:
         case 1 | 2 | 4 | 5:
@@ -203,10 +333,10 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _error_codes):
             print(output_df)
             print("ERROR: Dataframes failed basic validation")
             test_results.write("ERROR: Dataframes failed basic validation")
-            test_results.write(f'{error_codes[error]} \n')
+            test_results.write(f'{_error_codes[error]} \n')
             test_results.write(output_df.to_string())
 
-        case 3 | 6:
+        case 3 | 6 | 9:
             # Remap columns in manual and automated based on the mapping dataframe
             #  this is done to ensure that all files are sorted and compared in the same way
             manual = rename_and_drop_columns(manual, column_mapping)
@@ -251,15 +381,18 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _error_codes):
 # Run the main function
 if __name__ == "__main__":
     # vendor = input ("Vendor: ")
-    vendor = 'Nitel'
+    vendor = 'Sandler'
 
     # filename = input ("Filename (mmm-yy): ")
-    filename = 'dec-23'
+    filename = 'oct-23'
 
     # Set variables
     # Set variable to 1 to start a new results file, or to 0 to append to an existing file
-    new_file = 0
-    ignore_rows = 1    # Set variable to 1 to ignore the number of rows in the comparison, or to 0 to compare the number of rows
+    NEW_FILE = 0
+    # Set variable to 1 to ignore the number of rows in the comparison, or to 0 to compare the number of rows
+    IGNORE_ROWS = 1
+    # Set variable to 1 to ignore the data type in the comparison, or to 0 to compare the data type
+    IGNORE_DATA_TYPES = 0
 
     # Set dictionary of error codes
     error_codes = {
@@ -271,7 +404,8 @@ if __name__ == "__main__":
         5: 'The dataframe have the same columns, but different data types.',
         6: 'The dataframes have the same columns and data types.',
         7: 'The dataframes have different values.',
-        8: 'One or more columns in columns_to_sort do not exist in the dataframe.'
+        8: 'One or more columns in columns_to_sort do not exist in the dataframe.',
+        9: 'The dataframe have the same columns, but different data types. Ignoring the data types in the comparison.'
     }
-    main(_vendor=vendor, _filename=filename, _new_file=new_file, _ignore_rows=ignore_rows,
-         _error_codes=error_codes)
+    main(_vendor=vendor, _filename=filename, _new_file=NEW_FILE, _ignore_rows=IGNORE_ROWS,
+         _ignore_data_types=IGNORE_DATA_TYPES, _error_codes=error_codes)
