@@ -28,6 +28,7 @@ None
 from pathlib import Path
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 
 def rename_and_drop_columns(input_df, column_mapping_df):
@@ -76,9 +77,50 @@ def basic_conditioning(df1, df2):
         df2.drop(['id'], axis=1, inplace=True)
     if any(column_name == 'VIA' for column_name in df1.columns):
         df1.drop(['VIA'], axis=1, inplace=True)
+    if any(column_name == 'Via' for column_name in df1.columns):
+        df1.drop(['Via'], axis=1, inplace=True)
+    if any(column_name == 'VIA' for column_name in df2.columns):
+        df2.drop(['VIA'], axis=1, inplace=True)
     if any(column_name == 'Via' for column_name in df2.columns):
         df2.drop(['Via'], axis=1, inplace=True)
+    if any(column_name == 'Original Provider name ' for column_name in df1.columns):
+        df1.drop(['Original Provider name '], axis=1, inplace=True)
     return df1, df2
+
+
+def compare_summaries(df1, df2):
+    """
+    Compares two DataFrames after deleting all columns except "Account" and "Gross commission",
+    converting "Account" to string, grouping by "Account", aggregating "Gross commission" by sum, 
+    and sorting by "Account".
+
+    Parameters:
+    df1 (pd.DataFrame): The first DataFrame.
+    df2 (pd.DataFrame): The second DataFrame.
+
+    Returns:
+    tuple: A code indicating whether the DataFrames are the same (0) or different (1),
+           and a DataFrame containing the differences (or an empty DataFrame if they are the same).
+    """
+    # Select only the "Account" and "Gross commission" columns, convert "Account" to string, group by "Account", sum "Gross commission", and sort by "Account"
+    df1 = df1[['Account', 'Gross commission']]
+    df1['Account'] = df1['Account'].astype(str)
+    df1 = df1.groupby('Account').sum().sort_index()
+    df1 = df1.reset_index(drop=False)
+
+    df2 = df2[['Account', 'Gross commission']]
+    df2['Account'] = df2['Account'].astype(str)
+    df2 = df2.groupby('Account').sum().sort_index()
+    df2 = df2.reset_index(drop=False)
+
+    # Compare the two DataFrames
+    if df1.equals(df2):
+        # If they are the same, return 0 and an empty DataFrame
+        return 0, pd.DataFrame()
+    else:
+        # If they are different, return 1 and a DataFrame with the differences
+        diff = df1.compare(df2)
+        return 1, diff
 
 
 def basic_validation(df1, df2, result_file, _ignore_rows=0, _ignore_data_types=0):
@@ -185,7 +227,7 @@ def basic_validation(df1, df2, result_file, _ignore_rows=0, _ignore_data_types=0
         different_columns = list(set(df1.columns) ^ set(df2.columns))
         result_file.write(
             f"The dataframes have different columns: {different_columns}\n")
-        return error, different_columns
+        return error, pd.DataFrame(different_columns)
 
 
 def sort_rows(unsorted_df, columns_to_sort):
@@ -221,6 +263,22 @@ def compare_df(df1, df2, result_file):
     Returns:
     tuple: The error code and a DataFrame containing the differences.
     """
+    # Test if the total sum of the "Gross commission" column for each "Account" is the same in both dataframes
+    summary_error, summary_diff = compare_summaries(df1, df2)
+    if summary_error == 1:
+        result_file.write(
+            "The dataframes have different total sum of 'Gross commission' for each 'Account'.\n")
+        print("The dataframes have different total sum of 'Gross commission' for each 'Account'.\n")
+        summary_diff = summary_diff.reset_index().rename(
+            columns={'self': 'manual', 'other': 'automated'})
+        return 10, summary_diff
+    else:
+        result_file.write(
+            "The dataframes have the same total sum of 'Gross commission' for each 'Account'.\n")
+        print("The dataframes have the same total sum of 'Gross commission' for each 'Account'.\n")
+
+    # Start cell by cell comparison
+
     # Select only numeric columns
     df1_numeric = df1.select_dtypes(
         include=[np.number]).reset_index(drop=True)
@@ -318,7 +376,7 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _ignore_data_types, _error
         print("ERROR: opening test results file")
 
     test_results.write(
-        f"\n\n{'-'*37}\nTest results for '{_vendor}' - '{_filename}' \n")
+        f"\n\n{'-'*37}\nTest results for '{_vendor}' - '{_filename}' - {datetime.now()}\n")
 
     # delete unwanted columns
     manual, automated = basic_conditioning(manual, automated)
@@ -328,6 +386,7 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _ignore_data_types, _error
         manual, automated, test_results, _ignore_rows=_ignore_rows, _ignore_data_types=_ignore_data_types)
 
     match error:
+        # If the dataframes do not pass basic validations and the process is not allowed to continue
         case 1 | 2 | 4 | 5:
             print(_error_codes[error])
             print(output_df)
@@ -336,6 +395,7 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _ignore_data_types, _error
             test_results.write(f'{_error_codes[error]} \n')
             test_results.write(output_df.to_string())
 
+        # If the dataframes pass basic validations or it is allowed to continue despite error
         case 3 | 6 | 9:
             # Remap columns in manual and automated based on the mapping dataframe
             #  this is done to ensure that all files are sorted and compared in the same way
@@ -361,17 +421,9 @@ def main(_vendor, _filename, _new_file, _ignore_rows, _ignore_data_types, _error
                     manual.to_excel(writer, sheet_name='manual', index=False)
                     automated.to_excel(
                         writer, sheet_name='automated', index=False)
-                #     if isinstance(df_differences, pd.DataFrame):
-                #         df_differences.to_excel(writer, sheet_name='differences', index=False)
-                #     else:
-                #         pd.DataFrame([df_differences]).to_excel(writer,
-                #               sheet_name='differences', index=False)
-            elif manual_sort_error == 8:
-                print(_error_codes[manual_sort_error])
-                test_results.write(_error_codes[manual_sort_error])
-            elif automated_sort_error == 8:
-                print(_error_codes[automated_sort_error])
-                test_results.write(_error_codes[automated_sort_error])
+            elif manual_sort_error == 8 or automated_sort_error == 8:
+                print(_error_codes[8])
+                test_results.write(_error_codes[8])
             else:
                 print('Unknown error while sorting dataframes')
                 test_results.write('Unknown error while sorting dataframes')
@@ -384,13 +436,13 @@ if __name__ == "__main__":
     vendor = 'Sandler'
 
     # filename = input ("Filename (mmm-yy): ")
-    filename = 'oct-23'
+    filename = 'feb-24'
 
     # Set variables
     # Set variable to 1 to start a new results file, or to 0 to append to an existing file
     NEW_FILE = 0
     # Set variable to 1 to ignore the number of rows in the comparison, or to 0 to compare the number of rows
-    IGNORE_ROWS = 1
+    IGNORE_ROWS = 0
     # Set variable to 1 to ignore the data type in the comparison, or to 0 to compare the data type
     IGNORE_DATA_TYPES = 0
 
@@ -405,7 +457,8 @@ if __name__ == "__main__":
         6: 'The dataframes have the same columns and data types.',
         7: 'The dataframes have different values.',
         8: 'One or more columns in columns_to_sort do not exist in the dataframe.',
-        9: 'The dataframe have the same columns, but different data types. Ignoring the data types in the comparison.'
+        9: 'The dataframe have the same columns, but different data types. Ignoring the data types in the comparison.',
+        10: 'The dataframes have different total sum of Gross commission for each Account.'
     }
     main(_vendor=vendor, _filename=filename, _new_file=NEW_FILE, _ignore_rows=IGNORE_ROWS,
          _ignore_data_types=IGNORE_DATA_TYPES, _error_codes=error_codes)
