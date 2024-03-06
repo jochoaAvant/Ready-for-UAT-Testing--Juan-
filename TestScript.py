@@ -440,7 +440,7 @@ if __name__ == "__main__":
 
     # Set variables
     # Set variable to 1 to start a new results file, or to 0 to append to an existing file
-    NEW_FILE = 0
+    NEW_FILE = 1
     # Set variable to 1 to ignore the number of rows in the comparison, or to 0 to compare the number of rows
     IGNORE_ROWS = 0
     # Set variable to 1 to ignore the data type in the comparison, or to 0 to compare the data type
